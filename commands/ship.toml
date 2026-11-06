@@ -15,7 +15,7 @@ Dispatch each persona by tool name:
 2. **`security-auditor`** — Run a vulnerability and threat-model pass. Check OWASP Top 10, secrets handling, auth/authz, dependency CVEs. Output the standard audit report.
 3. **`test-engineer`** — Analyze test coverage for the change. Identify gaps in happy path, edge cases, error paths, and concurrency scenarios. Output the standard coverage analysis.
 
-If subagents are unavailable in the current CLI version, invoke each persona's system prompt sequentially in the main context and treat their outputs as if returned in parallel — the merge phase still works.
+If subagents are unavailable in the current CLI version, use a clearly labeled sequential fallback in the main context, invoking each persona's system prompt one at a time. Do not describe these runs as parallel and do not imply isolated subagent contexts. The merge phase still applies to the reports that were actually produced. If a persona cannot be run, mark its report as unavailable and set the execution status to PARTIAL.
 
 Constraints (from CLI's subagent model):
 - Subagents run in isolated context loops and return only their report to this main session.
@@ -24,9 +24,19 @@ Constraints (from CLI's subagent model):
 
 **Persona resolution.** If you've defined your own `code-reviewer`, `security-auditor`, or `test-engineer` in `agents/` or your global configuration, those take precedence over this plugin's versions — `/ship` picks up your customizations automatically. This is intentional: plugin subagents sit at the bottom of the CLI's scope priority table, so user-level definitions win by design.
 
+## Execution status
+
+Include one of these labels in the final report:
+
+- `PARALLEL` — all three specialist reports were produced by concurrent subagent calls.
+- `SEQUENTIAL` — all three reports were produced using the sequential fallback.
+- `PARTIAL` — one or more specialist reports could not be produced.
+
+State which personas completed and identify any unavailable reports. Do not imply that a missing report was completed or reviewed.
+
 ## Phase B — Merge in main context
 
-Once all three reports are back, the main agent (not a sub-persona) synthesizes them:
+The main agent (not a sub-persona) synthesizes all reports that were successfully produced. If execution status is PARTIAL, merge the available reports only, explicitly identify unavailable reports, and do not infer findings from missing reviews:
 
 1. **Code Quality** — Aggregate Critical/Required findings from `code-reviewer` and any failing tests, lint, or build output. Resolve duplicates between reviewers.
 2. **Security** — Promote any Critical/High `security-auditor` findings to launch blockers. Cross-reference with `code-reviewer`'s security axis.
@@ -64,7 +74,7 @@ Produce a single output:
 
 ## Rules
 
-1. The three Phase A personas run in parallel — never sequentially.
+1. Preferred mode: run all three Phase A personas in parallel in a single assistant turn. If that is unavailable, use the explicitly labeled sequential fallback described above. Never present sequential execution as parallel.
 2. Personas do not call each other. The main agent merges in Phase B.
 3. The rollback plan is mandatory before any GO decision.
 4. If any persona returns a Critical finding, the default verdict is NO-GO unless the user explicitly accepts the risk.

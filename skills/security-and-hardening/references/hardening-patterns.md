@@ -131,30 +131,34 @@ Any time the server fetches a URL the user influenced — webhooks, "import from
 // BAD: fetch whatever the user gives you
 await fetch(req.body.webhookUrl);
 
-// GOOD: allowlist scheme + host, reject if ANY resolved IP is private, forbid redirects
+// PRE-FLIGHT ONLY: validate scheme, host, port and DNS answers; not a complete SSRF defense.
 import { lookup } from 'node:dns/promises';
 import ipaddr from 'ipaddr.js';
 
 const ALLOWED_HOSTS = new Set(['hooks.example.com']);
+const ALLOWED_PORTS = new Set(['', '443']);
 
 async function assertSafeUrl(raw: string): Promise<URL> {
   const url = new URL(raw);
   if (url.protocol !== 'https:') throw new Error('https only');
+  if (url.username || url.password) throw new Error('URL credentials forbidden');
+  if (!ALLOWED_PORTS.has(url.port)) throw new Error('port not allowed');
   if (!ALLOWED_HOSTS.has(url.hostname)) throw new Error('host not allowed');
   // Resolve ALL records; a single private/reserved address fails the check.
   const addrs = await lookup(url.hostname, { all: true });
+  if (addrs.length === 0) throw new Error('DNS returned no addresses');
   if (addrs.some((a) => ipaddr.parse(a.address).range() !== 'unicast')) {
     throw new Error('private/reserved IP');
   }
   return url;
 }
 
-await fetch(await assertSafeUrl(req.body.webhookUrl), { redirect: 'error' });
+const validatedUrl = await assertSafeUrl(req.body.webhookUrl); // Pre-flight only; do not use ordinary fetch() as a pinned connection.
 ```
 
 The `range() !== 'unicast'` check covers loopback, link-local `169.254.169.254` (cloud metadata, the #1 SSRF target), private, and unique-local ranges across IPv4 and IPv6.
 
-**Caveat — this still has a TOCTOU gap.** `fetch` resolves DNS again after the check, so an attacker using a short-TTL record can rebind to an internal IP between validation and connection. For high-risk surfaces, resolve once and connect to the pinned IP, or put a filtering agent in front (`request-filtering-agent` / `ssrf-req-filter`).
+**Important limitation:** DNS can change between validation and connection. This example does not pin the actual HTTP connection to a validated IP. A production implementation must use a transport that pins the destination IP while preserving hostname-based TLS verification, or a trusted egress proxy with destination restrictions. Keep redirects disabled, or validate every redirect target.
 
 ## Input Validation Patterns
 
@@ -211,6 +215,8 @@ function validateUpload(file: UploadedFile) {
 A delete, move, or overwrite is only as safe as the value that names its target. Reading that value from the kernel, a job payload, or a sibling service proves where it *arrived from*, not who *wrote* it — another process's command line is as attacker-controlled as a form field. A shape check ("absolute path, at least one directory deep") proves well-formedness and gets mistaken for authorization; that is how a cleanup routine deletes the root instead of the leaf.
 
 Before a destructive call, require all three: the resolved target sits under an **allowlisted root** (compare after resolving symlinks, never on the raw string); it is at least one level **below** that root, so a root is never itself the target; and it carries **evidence that it is yours**, read *before* the operation and before any teardown that removes it — otherwise "absent" and "not mine" are indistinguishable. On refusal, log the rejected target and stop: a cleanup that falls back to a broader default path is the failure this guards against. Worked example in `../../../references/security-checklist.md#destructive-path-operations`.
+
+The ownership-marker read itself also needs race-safe handling: `readFile()` follows symlinks and opens by pathname. Production code must use no-follow file opening, verify a regular file, and protect the opened file and parent hierarchy against concurrent replacement.
 
 Two limits, because the check reads stronger than it is. A marker inside the tree is self-attestation — anything that can write there can write the marker — so the expected owner has to come from authenticated state, and the marker needs integrity protection (restrictive ownership, or a MAC) before it counts as authorization. And resolving a path and then operating on the *name* is a check/use race wherever an untrusted process can swap an ancestor: on a shared volume, hold the target by descriptor and use no-follow, beneath-the-root operations, or make sure the hierarchy cannot change for the duration.
 

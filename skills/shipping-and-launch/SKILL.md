@@ -256,31 +256,42 @@ A high burn rate during a canary (consuming budget faster than the baseline pace
 
 ## Rollback Strategy
 
-Every deployment needs a rollback plan before it happens:
+Every deployment needs a documented, release-specific rollback or recovery plan before it happens. The plan must use the project's approved deployment process and must not assume that reverting application code also reverses database changes.
 
 ```markdown
 ## Rollback Plan for [Feature/Release]
 
 ### Trigger Conditions
-- Error rate > 2x baseline
-- P95 latency > [X]ms
-- User reports of [specific issue]
+- Error rate: [threshold tied to service baseline/SLO]
+- P95 latency: [threshold tied to service baseline/SLO]
+- User reports or critical-flow failures: [specific signal]
+- Error-budget burn rate: [service-specific hold/rollback threshold]
 
 ### Rollback Steps
-1. Disable feature flag (if applicable)
-   OR
-1. Deploy previous version: `git revert <commit> && git push`
-2. Verify rollback: health check, error monitoring
-3. Communicate: notify team of rollback
+1. Confirm the trigger and identify the affected release.
+2. Stop or pause the rollout using the approved deployment controls.
+3. Disable the feature flag, if the feature supports a safe kill switch.
+4. If needed, deploy the last known-good application version through the approved CI/CD or release procedure. Do not assume that `git revert` followed by `git push` performs a production rollback.
+5. Verify health checks, critical user flows, error rates, latency, and data integrity.
+6. Communicate the outcome and record the incident and recovery actions.
 
-### Database Considerations
-- Migration [X] has a rollback: <verified command or runbook link>
-- Data inserted by new feature: [preserved / cleaned up]
+### Database and Data Recovery
+- Migration identifier and compatibility requirements: [details]
+- Is the migration backward-compatible with the previous application version? [yes/no + evidence]
+- Recovery method: [forward fix / verified down migration / backup restore / other]
+- Backup location, timestamp, and retention: [details]
+- Latest restore-test evidence: [date, result, and runbook]
+- Data written by the new release: [preserved / reconciled / recoverable / intentionally removed]
+- Data-loss risk and approval, if any: [details]
 
-### Time to Rollback
-- Feature flag: < 1 minute
-- Redeploy previous version: < 5 minutes
-- Database rollback: < 15 minutes
+Prefer backward-compatible expand-contract migrations: deploy schema changes that support both application versions, migrate consumers, and remove obsolete schema only in a later release. Do not run a destructive down migration or restore over production data without a reviewed recovery procedure and explicit authorization.
+
+### Recovery Objectives
+- Application rollback target (RTO): [measured value and evidence]
+- Database recovery target (RTO): [measured value and evidence]
+- Recovery point objective (RPO): [approved data-loss window]
+- Last successful rollback or restore drill: [date and result]
+- If these values have not been measured, mark them as unknown; do not invent estimates.
 ```
 ## See Also
 

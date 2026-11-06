@@ -63,7 +63,7 @@ Before reaching for controls, spend five minutes thinking like an attacker:
 - [ ] HTML output encoded (use framework auto-escaping)
 - [ ] URLs validated before redirect (prevent open redirect)
 - [ ] Server-side URL fetches allowlisted; private/reserved IPs blocked (prevent SSRF)
-- [ ] Destructive path operations (delete/move/overwrite): symlinks resolved, allowlisted root, minimum depth, ownership evidence read before the call
+- [ ] Destructive path operations: canonicalize trusted allowlisted roots and targets; enforce containment and minimum depth; verify ownership from authenticated, integrity-protected state; perform the operation with descriptor-based no-follow/beneath-root semantics (path validation alone is not safe deletion).
 
 ### Destructive Path Operations
 
@@ -79,7 +79,8 @@ const MIN_DEPTH = 1;                               // so a root is never the tar
 
 async function resolveDeletable(candidate: string, expectedOwner: string) {
   const target = await realpath(resolve(candidate)); // symlinks resolved BEFORE the check
-  const inRoot = ALLOWED_ROOTS.some((root) => {
+  const canonicalRoots = await Promise.all(ALLOWED_ROOTS.map((root) => realpath(root)));
+  const inRoot = canonicalRoots.some((root) => {
     const rel = relative(root, target);
     // `rel === '..'` / `'../'` only — a plain `startsWith('..')` would also
     // reject a legitimate child named `..cache`.
@@ -93,6 +94,7 @@ async function resolveDeletable(candidate: string, expectedOwner: string) {
   return target;
 }
 ```
+This is validation-only: it does not perform a deletion and does not make a later unlink() or rm() safe. Do not treat the returned path as an authorization token.
 
 What this does not do, and must be said where the snippet is copied from:
 
@@ -100,6 +102,7 @@ What this does not do, and must be said where the snippet is copied from:
   `.owner`. `expectedOwner` has to come from authenticated state, and the marker needs
   integrity protection (restrictive ownership, or a MAC) before it is authorization
   rather than a consistency check against a misderived target.
+- **The ownership-marker read is not race-safe.** `readFile()` follows symlinks and opens the marker by pathname. A production implementation must open it with no-follow semantics, verify it is a regular file, and protect the opened file and its parent hierarchy against concurrent replacement. Do not treat this illustrative read as secure ownership verification.
 - **Returning a path leaves a check/use race.** Where an untrusted process can swap an
   ancestor between the check and the call, operate on a descriptor with no-follow,
   beneath-the-root semantics, or guarantee the hierarchy is immutable for the duration.
